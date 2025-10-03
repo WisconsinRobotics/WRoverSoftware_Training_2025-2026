@@ -1,74 +1,173 @@
-# Wisconsin Robotics -- 2024-2025 Software System
-Codebase for the URC rover at UW-Madison, 2024-2025.
+# Swerve Drive Training
 
-## Contributing
-### Branches
+The aim of this project is to practice writing ROS2 nodes and learn to control motor controllers. In this project, you are expected to write three nodes that work together:
 
-- The `master` Branch is protected and will only accept changes through a peer reviewed merge request. `master` should include fully functionally, hardware compatable code. If hardware or software archeture changes make the branch unviable, the commit will be marked at deprecated with the date on the change.
-- The `development` branch is unprotected and to be used for untested changes. The branch will be rebased on any changes to `master`.
-- Public branches will be named
-`<dev type>/<project|misc>-[issue number]-<brief description>`
-	- `feature/` branches are clean, buildable, and only rebased before a pull request or when nescessary
-	- `dev/` and `bug/` branches are for general development, and do not need clean refs. These branches may require a forced pull.
-- The following commit guidelines are required for "feature" branches and recommended for
+1. **Xbox Publisher** (`xbox_publisher.py`) - Captures Xbox controller input
+2. **Swerve Motor** (`swerve_motor.py`) - Calculates inverse kinematics for swerve drive
+3. **Swerve Control** (`swerve_control.py`) - Generates CAN bus commands for motor controllers
 
-### Commits
+```
+Xbox Controller → xbox_publisher → swerve_motor → swerve_control → CAN Bus → VESCs
+```
 
-#### Subject Line
+## Prerequisites
 
-- Try to keep the subject to 50 characters, and strictly no less than 72 characters
-- Preface the subject line with the affected subsystem. If the change affects multiple subsystems, consider using multiple commits.
-- Capitalize the first letter and do not include a period.
-- Use the imperative voice: word your change as a command.
-	- For example, a bug fix might read **Drivetrain: Fix the encoder position**
+- ROS2 (tested with Foxy/Humble)
+- Python 3
+- pygame library: `pip install pygame`
+- Custom message package: `custom_msgs_srvs` (contains `SwervePrevAngle` message)
 
-#### Body
-- If nessecary, include a description of the motivation and the affected changed. When in doubt, include a body.
-    - A bug fix would include an explaination of the bug and justification for the change
-    - An API change would include an explaintion with the shortcomings of the previous interface
-- Wrap the body at 72 characters
+## Rover Configuration
 
-#### Footer
-- For tested or ready to test changes, include a sign off with `git commit -s`
-- When applicable, include the following tags
-    - `Coauthored-by <Developer>`
-    - `Reported-by <Developer>`
-    - `Tested-by <Developer>`
-    - `Reviewed-by <Developer>`
-    - `Fixes <Commit Hash>`
-    - `Depends-on <Commit Hash>`
+- **Vehicle Dimensions:**
+  - Body Height: 0.93m (front-to-back)
+  - Body Width: 0.60m (side-to-side)
 
-### Pull Requests
-Code will be merged into either `master` or an upstream development branch with a pull request.
+- **VESC Motor Controllers:**
+  - FL (Front Left): IDs 70 (drive), 71 (steering)
+  - FR (Front Right): IDs 72 (drive), 73 (steering)
+  - BL (Back Left): IDs 74 (drive), 75 (steering)
+  - BR (Back Right): IDs 76 (drive), 77 (steering)
 
-#### Atomic Commits
+- **Maximum RPM:** 6000
 
-Commits used for development and commits used for maintaince look very difference. Each **Logical Change** should be seperated into a different commit. As a rule of thumb, no line should be changed twice and no commit should affect two subsystems. 
+## Node 1: Xbox Publisher
 
-Rebase the branch you intend to merge onto the target branch. Unclean branches can be changed with `git rebase`. Clean branches might warrent the creation of a new branch. Each commit should be justifiable on its own merits. Each commit should be buildable in isolation.
+### Purpose
+Reads Xbox controller input and publishes motion commands to the `swerve` topic.
 
-- Multiple revisions of a single change should be squashed into one commit.
-- Changes to an API should be seperated into a commit for the API change and a commit for each subsystem that uses the API.
-- Bug fixes and preformance enchancements should be seperated into different commits.
-- Use the `Depends-on` footer tag to indicate a commit
+### Topics Published
+- `/swerve` (Float32MultiArray): `[forward/back, left/right, left_trigger, right_trigger]`
 
-#### Opening Pull requests
+### Controller Mapping
+- **Left Stick Y-axis** (inverted): Forward/backward translation
+- **Right Stick X-axis**: Left/right translation (strafing)
+- **Left Trigger**: Rotation control (counter-clockwise)
+- **Right Trigger**: Rotation control (clockwise)
 
-With your clean branch, open a pull request on github. This can be done through the github issue if applicable. 
+### Key Features
+- **Hot-plugging support:** Automatically detects controller connection/disconnection
+- **Safety:** Sends zero motion command when controller disconnects
+- **Update rate:** 20 Hz (50ms timer period)
 
-## Documentation
-Overarching system details will be described through Software Projects files.
+### Usage
+```bash
+ros2 run <package_name> xbox_publisher
+```
 
-There is no particular code style guide that we use, however there are specific requirments that we would like to see while developing, such as giving each function a docstring that describes how the function works, its parameters, as well as the return. Code should be commented often, a good rule of thumb is about every 3 to 5 lines of code there should be a line of comment minimum. Also, it is also helpful to type the arguements and return of the function, for example: def add_2_nums(int: a, int: b) -> int: this function specifies that it takes 2 ints and has a return that is also of type int. Additionally, you should make sure your code is readable and sensible; if there's anything that's confusing or unintuitive, use comments to clarify it for future maintainers.
+## Node 2: Swerve Motor (Inverse Kinematics)
 
-An example of this would look like this function below.\
-def add_2_nums(int: a, int: b) -> int:\
-&emsp;&emsp;"""\
-&emsp;&emsp;Computes the sum of 2 numbers\
-&emsp;&emsp;Args:\
-&emsp;&emsp;&emsp;&emsp;a (int): Number that will be added onto\
-&emsp;&emsp;&emsp;&emsp;b (int): The number you are adding\
-&emsp;&emsp;Returns:\
-&emsp;&emsp;&emsp;&emsp;int: the summed number\
-&emsp;&emsp;"""\
-&emsp;&emsp;return a + b
+### Purpose
+Converts vehicle motion commands into individual wheel velocities and steering angles using swerve drive inverse kinematics.
+
+### Topics Subscribed
+- `/swerve` (Float32MultiArray): Motion commands from Xbox controller
+- `/prev_pid` (SwervePrevAngle): Previous PID angles (for monitoring)
+
+### Topics Published
+- `/swerve_FL` (Float32MultiArray): `[speed, angle]` for front-left wheel
+- `/swerve_FR` (Float32MultiArray): `[speed, angle]` for front-right wheel
+- `/swerve_BL` (Float32MultiArray): `[speed, angle]` for back-left wheel
+- `/swerve_BR` (Float32MultiArray): `[speed, angle]` for back-right wheel
+
+### Swerve Drive Kinematics
+
+The inverse kinematics are based on the standard swerve drive equations. For a vehicle with translational velocity `(Vx, Vy)` and rotational velocity `ω`, each wheel's velocity vector is calculated as:
+
+#### Step 1: Calculate intermediate values
+```
+A = Vx - ω × (BODY_HEIGHT / 2)
+B = Vx + ω × (BODY_HEIGHT / 2)
+C = Vy - ω × (BODY_WIDTH / 2)
+D = Vy + ω × (BODY_WIDTH / 2)
+```
+
+#### Step 2: Determine wheel vectors
+```
+Front Left  (FL): [B, D]
+Front Right (FR): [B, C]
+Back Left   (BL): [A, D]
+Back Right  (BR): [A, C]
+```
+
+#### Step 3: Calculate wheel speed and angle
+For each wheel:
+```
+Speed = √(x² + y²)
+Angle = atan2(x, y) × (180/π)
+```
+
+#### Step 4: Angle optimization
+To minimize wheel rotation, angles are constrained to ±90°:
+```
+if angle < -90°:
+    angle += 180°
+    speed *= -1
+else if angle ≥ 90°:
+    angle -= 180°
+    speed *= -1
+```
+
+This allows wheels to drive in reverse rather than rotating more than 90°.
+
+### Rotational Velocity Calculation
+The rotational velocity is derived from the Xbox triggers:
+```
+ω = -((left_trigger + 1) / 2) + ((right_trigger + 1) / 2)
+```
+
+### Usage
+```bash
+ros2 run <package_name> swerve_motor
+```
+
+## Node 3: Swerve Control (CAN Bus Interface)
+
+### Purpose
+Converts wheel speeds and angles into CAN bus commands for VESC motor controllers.
+
+### Topics Subscribed
+- `/swerve_FL`, `/swerve_FR`, `/swerve_BL`, `/swerve_BR` (Float32MultiArray)
+
+### Topics Published
+- `/can_msg` (String): CAN bus commands in format: `"<ID> <COMMAND> <VALUE> <TYPE>"`
+
+### CAN Command Format
+
+#### RPM Command (Drive Motors)
+```
+<VESC_ID> CAN_PACKET_SET_RPM <rpm_value> float
+```
+Example: `"70 CAN_PACKET_SET_RPM 3000.0 float"`
+
+#### Position Command (Steering Motors)
+```
+<VESC_ID> CAN_PACKET_SET_POS <angle_value> float
+```
+Example: `"71 CAN_PACKET_SET_POS 180.0 float"`
+
+### Angle Transformation
+The steering angle is transformed to the VESC coordinate system:
+```
+turn_amount = (wheel_angle / 4) + 180
+```
+
+This maps the ±180° wheel angle to the VESC's expected range (with safety limits between 135-225).
+
+### Safety Features
+- **Angle limiting:** Warns if commanded angle is outside safe range (135° to 225°)
+- **RPM scaling:** Multiplies normalized speed by MAX_RPM (6000)
+
+### Usage
+```bash
+ros2 run <package_name> swerve_control
+```
+
+## Theory: Swerve Drive Kinematics
+
+Swerve drive allows omnidirectional movement by independently controlling each wheel's speed and angle. The system can:
+- Translate in any direction without changing heading
+- Rotate in place
+- Combine translation and rotation simultaneously
+
+The inverse kinematics transform desired vehicle motion (Vx, Vy, ω) into individual wheel commands. Each wheel's position relative to the vehicle center determines how rotation affects its velocity vector, creating the characteristic swerve drive behavior.
